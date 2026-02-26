@@ -1,0 +1,14 @@
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "B", "A", "C4", "PT", "RUF"]
+ignore = ["S101"]  # Allow assert in tests
+
+[lint.per-file-ignores]
+"tests/**" = ["S", "ARG"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
