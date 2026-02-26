@@ -1,12 +1,8 @@
-"""OpenAI-compatible proxy routes.
+"""Anthropic (Claude) proxy routes.
 
-Provides ``/openai/v1/chat/completions`` and ``/openai/v1/embeddings``
-endpoints that transparently detect and redact PHI before forwarding
-requests to the real OpenAI API, then rehydrate the responses before
-returning them to the caller.
-
-A ``/v1/*`` default router mirrors the same handlers so clients can use
-the proxy as a drop-in replacement without the ``/openai`` prefix.
+Provides ``/anthropic/v1/messages`` endpoint that transparently detects
+and redacts PHI before forwarding requests to the Anthropic Messages API,
+then rehydrates the responses before returning them to the caller.
 """
 
 from __future__ import annotations
@@ -22,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from phi_redactor.models import RedactionAction
-from phi_redactor.proxy.adapters.openai import OpenAIAdapter
+from phi_redactor.proxy.adapters.anthropic import AnthropicAdapter
 from phi_redactor.proxy.streaming import StreamRehydrator
 
 if TYPE_CHECKING:
@@ -33,12 +29,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/openai/v1", tags=["OpenAI Proxy"])
-default_router = APIRouter(prefix="/v1", tags=["Default Proxy"])
+router = APIRouter(prefix="/anthropic/v1", tags=["Anthropic Proxy"])
 
-_adapter = OpenAIAdapter()
+_adapter = AnthropicAdapter()
 
-_UPSTREAM_BASE_URL = "https://api.openai.com"
+_UPSTREAM_BASE_URL = "https://api.anthropic.com"
 
 
 # ---------------------------------------------------------------------------
@@ -46,14 +41,7 @@ _UPSTREAM_BASE_URL = "https://api.openai.com"
 # ---------------------------------------------------------------------------
 
 
-def _get_components(request: Request) -> tuple[
-    PhiDetectionEngine,
-    SemanticMasker,
-    SessionManager,
-    AuditTrail,
-    httpx.AsyncClient,
-    float,
-]:
+def _get_components(request: Request) -> tuple:
     """Retrieve shared application components from ``request.app.state``."""
     state = request.app.state
     return (
@@ -75,17 +63,7 @@ def _detect_and_mask(
     texts: list[str],
     sensitivity: float,
 ) -> list[str]:
-    """Run PHI detection and masking on a list of texts.
-
-    For each detection, an audit event is logged.  If detection raises an
-    exception the request is **blocked** (fail-safe).
-
-    Returns:
-        A list of masked texts positionally aligned with *texts*.
-
-    Raises:
-        HTTPException: If detection or masking fails (503).
-    """
+    """Run PHI detection and masking on a list of texts."""
     masked_texts: list[str] = []
 
     for text in texts:
@@ -107,7 +85,6 @@ def _detect_and_mask(
                 detail="PHI masking unavailable. Request blocked for safety.",
             )
 
-        # Audit each detection.
         for det in detections:
             try:
                 audit.log_event(
@@ -128,15 +105,14 @@ def _detect_and_mask(
 
 
 # ---------------------------------------------------------------------------
-# Chat completions
+# Messages endpoint
 # ---------------------------------------------------------------------------
 
 
-async def _chat_completions_handler(request: Request) -> StreamingResponse | JSONResponse:
-    """Core handler for ``POST /chat/completions``."""
+async def _messages_handler(request: Request) -> StreamingResponse | JSONResponse:
+    """Core handler for ``POST /messages``."""
     engine, masker, session_mgr, audit, http_client, sensitivity = _get_components(request)
 
-    # 1. Parse request body.
     try:
         body = await request.json()
     except Exception:
@@ -145,36 +121,34 @@ async def _chat_completions_handler(request: Request) -> StreamingResponse | JSO
     request_id = str(uuid.uuid4())
     is_streaming = body.get("stream", False)
 
-    # 2. Session management.
+    # Session management
     client_session_id = request.headers.get("x-session-id")
-    provider = "openai"
-    session = session_mgr.get_or_create(session_id=client_session_id, provider=provider)
+    session = session_mgr.get_or_create(session_id=client_session_id, provider="anthropic")
     session_id = session.id
 
-    # 3. Extract messages.
+    # Extract messages
     original_texts = _adapter.extract_messages(body)
 
-    # 4 + 5. Detect and mask PHI.
+    # Detect and mask PHI
     start_time = time.monotonic()
     masked_texts = _detect_and_mask(
         engine, masker, audit, session_id, request_id, original_texts, sensitivity,
     )
     processing_ms = (time.monotonic() - start_time) * 1000
 
-    # 6. Build upstream request with masked content.
+    # Build upstream request with masked content
     upstream_body = _adapter.inject_messages(body, masked_texts)
 
-    # 7. Build headers.
+    # Build headers
     raw_headers = {k.lower(): v for k, v in request.headers.items()}
     auth_headers = _adapter.get_auth_headers(raw_headers)
-    upstream_url = _adapter.get_upstream_url(_UPSTREAM_BASE_URL, "/v1/chat/completions")
+    upstream_url = _adapter.get_upstream_url(_UPSTREAM_BASE_URL, "/v1/messages")
 
     forward_headers = {
         "Content-Type": "application/json",
         **auth_headers,
     }
 
-    # 8. Forward to upstream.
     if is_streaming:
         return await _handle_streaming(
             http_client=http_client,
@@ -218,7 +192,7 @@ async def _handle_non_streaming(
             headers=forward_headers,
         )
     except httpx.HTTPError as exc:
-        logger.error("Upstream request failed: %s", exc)
+        logger.error("Upstream Anthropic request failed: %s", exc)
         raise HTTPException(
             status_code=502,
             detail="Upstream provider unavailable.",
@@ -229,27 +203,21 @@ async def _handle_non_streaming(
         if content_type.startswith("application/json"):
             error_content = upstream_resp.json()
         else:
-            error_content = {"error": upstream_resp.text}
-        return JSONResponse(
-            status_code=upstream_resp.status_code,
-            content=error_content,
-        )
+            error_content = {"error": {"type": "upstream_error", "message": upstream_resp.text}}
+        return JSONResponse(status_code=upstream_resp.status_code, content=error_content)
 
     try:
         response_body = upstream_resp.json()
     except Exception:
-        raise HTTPException(
-            status_code=502,
-            detail="Invalid JSON from upstream provider.",
-        )
+        raise HTTPException(status_code=502, detail="Invalid JSON from upstream provider.")
 
-    # Rehydrate the response content.
+    # Rehydrate response content
     response_text = _adapter.parse_response_content(response_body)
     if response_text:
         rehydrated = masker.rehydrate(response_text, session_id)
         response_body = _adapter.inject_response_content(response_body, rehydrated)
 
-    # Add proxy metadata.
+    # Add proxy metadata
     response_body["x_phi_redactor"] = {
         "session_id": session_id,
         "request_id": request_id,
@@ -273,10 +241,7 @@ async def _handle_streaming(
     """Forward a streaming request and rehydrate SSE chunks."""
 
     async def _stream_generator() -> AsyncIterator[str]:
-        rehydrator = StreamRehydrator(
-            session_id=session_id,
-            masker=masker,
-        )
+        rehydrator = StreamRehydrator(session_id=session_id, masker=masker)
 
         try:
             async with http_client.stream(
@@ -286,26 +251,24 @@ async def _handle_streaming(
                 headers=forward_headers,
             ) as upstream_resp:
                 if upstream_resp.status_code >= 400:
-                    # Read error body and yield it.
                     error_body = b""
                     async for chunk in upstream_resp.aiter_bytes():
                         error_body += chunk
                     error_msg = error_body.decode("utf-8", errors="replace")
-                    error_data = json.dumps({"error": error_msg})
+                    error_data = json.dumps({"error": {"message": error_msg}})
                     yield f"data: {error_data}\n\n"
                     return
 
                 async for line in upstream_resp.aiter_lines():
                     if _adapter.is_stream_done(line):
-                        # Flush the rehydrator buffer.
                         remaining = rehydrator.flush()
                         if remaining:
-                            # Emit final content as a data event.
                             final_payload = {
-                                "choices": [{"delta": {"content": remaining}, "index": 0}],
+                                "type": "content_block_delta",
+                                "delta": {"type": "text_delta", "text": remaining},
                             }
                             yield f"data: {json.dumps(final_payload)}\n\n"
-                        yield "data: [DONE]\n\n"
+                        yield f"{line}\n\n"
                         return
 
                     content = _adapter.parse_stream_chunk(line)
@@ -315,13 +278,12 @@ async def _handle_streaming(
                             modified_line = _adapter.inject_stream_chunk(line, safe_text)
                             yield f"{modified_line}\n\n"
                     else:
-                        # Non-content lines (e.g., role, empty) pass through.
                         if line.strip():
                             yield f"{line}\n\n"
 
         except httpx.HTTPError as exc:
-            logger.error("Upstream streaming request failed: %s", exc)
-            error_payload = {"error": {"message": "Upstream provider unavailable."}}
+            logger.error("Upstream Anthropic streaming request failed: %s", exc)
+            error_payload = {"error": {"type": "api_error", "message": "Upstream provider unavailable."}}
             yield f"data: {json.dumps(error_payload)}\n\n"
 
     return StreamingResponse(
@@ -337,136 +299,13 @@ async def _handle_streaming(
 
 
 # ---------------------------------------------------------------------------
-# Embeddings
-# ---------------------------------------------------------------------------
-
-
-async def _embeddings_handler(request: Request) -> JSONResponse:
-    """Core handler for ``POST /embeddings``."""
-    engine, masker, session_mgr, audit, http_client, sensitivity = _get_components(request)
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON request body.")
-
-    request_id = str(uuid.uuid4())
-
-    # Session management.
-    client_session_id = request.headers.get("x-session-id")
-    session = session_mgr.get_or_create(session_id=client_session_id, provider="openai")
-    session_id = session.id
-
-    # Extract input text(s).
-    raw_input = body.get("input", "")
-    if isinstance(raw_input, str):
-        input_texts = [raw_input]
-    elif isinstance(raw_input, list):
-        input_texts = [t for t in raw_input if isinstance(t, str)]
-    else:
-        input_texts = [str(raw_input)]
-
-    # Detect and mask.
-    start_time = time.monotonic()
-    masked_texts = _detect_and_mask(
-        engine, masker, audit, session_id, request_id, input_texts, sensitivity,
-    )
-    processing_ms = (time.monotonic() - start_time) * 1000
-
-    # Rebuild input.
-    upstream_body = {**body}
-    if isinstance(raw_input, str):
-        upstream_body["input"] = masked_texts[0] if masked_texts else raw_input
-    elif isinstance(raw_input, list):
-        upstream_body["input"] = masked_texts
-    else:
-        upstream_body["input"] = masked_texts[0] if masked_texts else str(raw_input)
-
-    # Forward.
-    raw_headers = {k.lower(): v for k, v in request.headers.items()}
-    auth_headers = _adapter.get_auth_headers(raw_headers)
-    upstream_url = _adapter.get_upstream_url(_UPSTREAM_BASE_URL, "/v1/embeddings")
-
-    forward_headers = {
-        "Content-Type": "application/json",
-        **auth_headers,
-    }
-
-    try:
-        upstream_resp = await http_client.post(
-            upstream_url,
-            json=upstream_body,
-            headers=forward_headers,
-        )
-    except httpx.HTTPError as exc:
-        logger.error("Upstream embeddings request failed: %s", exc)
-        raise HTTPException(
-            status_code=502,
-            detail="Upstream provider unavailable.",
-        )
-
-    if upstream_resp.status_code >= 400:
-        content_type = upstream_resp.headers.get("content-type", "")
-        if content_type.startswith("application/json"):
-            error_content = upstream_resp.json()
-        else:
-            error_content = {"error": upstream_resp.text}
-        return JSONResponse(
-            status_code=upstream_resp.status_code,
-            content=error_content,
-        )
-
-    try:
-        response_body = upstream_resp.json()
-    except Exception:
-        raise HTTPException(
-            status_code=502,
-            detail="Invalid JSON from upstream provider.",
-        )
-
-    # Embeddings responses don't contain text to rehydrate, but add metadata.
-    response_body["x_phi_redactor"] = {
-        "session_id": session_id,
-        "request_id": request_id,
-        "processing_ms": round(processing_ms, 2),
-    }
-
-    return JSONResponse(content=response_body)
-
-
-# ---------------------------------------------------------------------------
 # Route registration
 # ---------------------------------------------------------------------------
 
 router.add_api_route(
-    "/chat/completions",
-    _chat_completions_handler,
+    "/messages",
+    _messages_handler,
     methods=["POST"],
-    summary="Proxy OpenAI chat completions with PHI redaction",
-    response_model=None,
-)
-
-router.add_api_route(
-    "/embeddings",
-    _embeddings_handler,
-    methods=["POST"],
-    summary="Proxy OpenAI embeddings with PHI redaction",
-    response_model=None,
-)
-
-# Default /v1/* routes (drop-in replacement without /openai prefix)
-default_router.add_api_route(
-    "/chat/completions",
-    _chat_completions_handler,
-    methods=["POST"],
-    summary="Proxy chat completions with PHI redaction (default)",
-    response_model=None,
-)
-
-default_router.add_api_route(
-    "/embeddings",
-    _embeddings_handler,
-    methods=["POST"],
-    summary="Proxy embeddings with PHI redaction (default)",
+    summary="Proxy Anthropic Messages API with PHI redaction",
     response_model=None,
 )

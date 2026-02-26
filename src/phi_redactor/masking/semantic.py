@@ -208,10 +208,9 @@ class SemanticMasker:
     def _lookup(self, session_id: str, original: str) -> str | None:
         """Look up an existing mapping for *original* in the given session."""
         if self._vault is not None:
-            try:
-                return self._vault.lookup(session_id, original)
-            except (AttributeError, TypeError):
-                pass
+            result = self._vault.lookup_by_original(session_id, original)
+            if result is not None:
+                return result
         return self._memory.get(session_id, {}).get(original)
 
     def _store(
@@ -223,15 +222,12 @@ class SemanticMasker:
     ) -> None:
         """Persist a mapping to the vault (if available) and in-memory cache."""
         if self._vault is not None:
-            try:
-                self._vault.store(
-                    session_id=session_id,
-                    original=original,
-                    synthetic=synthetic,
-                    category=category.value,
-                )
-            except (AttributeError, TypeError):
-                pass
+            self._vault.store_mapping(
+                session_id=session_id,
+                original=original,
+                synthetic=synthetic,
+                category=category.value,
+            )
         self._memory.setdefault(session_id, {})[original] = synthetic
 
     def _get_reverse_map(self, session_id: str) -> dict[str, str]:
@@ -239,12 +235,9 @@ class SemanticMasker:
         reverse: dict[str, str] = {}
 
         if self._vault is not None:
-            try:
-                vault_map = self._vault.get_reverse_map(session_id)
-                if vault_map:
-                    reverse.update(vault_map)
-            except (AttributeError, TypeError):
-                pass
+            vault_map = self._vault.get_reverse_map(session_id)
+            if vault_map:
+                reverse.update(vault_map)
 
         # Overlay in-memory mappings (which may be more current).
         for original, synthetic in self._memory.get(session_id, {}).items():

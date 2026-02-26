@@ -57,6 +57,7 @@ class _LazyGroup(click.Group):
     lazy_commands={
         "serve": "phi_redactor.cli.serve",
         "redact": "phi_redactor.cli.redact",
+        "report": "phi_redactor.cli.report",
     },
 )
 @click.option(

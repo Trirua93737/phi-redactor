@@ -40,7 +40,7 @@ async def health(request: Request) -> JSONResponse:
             "version": _VERSION,
             "uptime_seconds": uptime_seconds,
             "active_sessions": session_mgr.active_count,
-            "providers": ["openai"],
+            "providers": ["openai", "anthropic"],
         }
     )
 
@@ -158,6 +158,71 @@ async def close_session(request: Request, session_id: str) -> JSONResponse:
     return JSONResponse(
         content={"status": "closed", "session_id": session_id},
     )
+
+
+# ---------------------------------------------------------------------------
+# Compliance Report
+# ---------------------------------------------------------------------------
+
+
+@router.get("/compliance/report", summary="Generate HIPAA compliance report")
+async def compliance_report(
+    request: Request,
+    session_id: str | None = Query(default=None, description="Filter by session ID"),
+    from_dt: str | None = Query(
+        default=None,
+        alias="from",
+        description="Start datetime (ISO 8601)",
+    ),
+    to_dt: str | None = Query(
+        default=None,
+        alias="to",
+        description="End datetime (ISO 8601)",
+    ),
+) -> JSONResponse:
+    """Generate a HIPAA Safe Harbor compliance evidence report."""
+    from phi_redactor.audit.reports import ComplianceReportGenerator
+
+    state = request.app.state
+    audit = state.audit_trail
+
+    parsed_from: datetime | None = None
+    parsed_to: datetime | None = None
+
+    if from_dt is not None:
+        try:
+            parsed_from = datetime.fromisoformat(from_dt)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid 'from' datetime: {from_dt}")
+
+    if to_dt is not None:
+        try:
+            parsed_to = datetime.fromisoformat(to_dt)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid 'to' datetime: {to_dt}")
+
+    generator = ComplianceReportGenerator(audit_trail=audit)
+    report = generator.generate_report(
+        from_dt=parsed_from,
+        to_dt=parsed_to,
+        session_id=session_id,
+    )
+
+    return JSONResponse(content=report)
+
+
+@router.get("/compliance/summary", summary="Quick compliance status check")
+async def compliance_summary(request: Request) -> JSONResponse:
+    """Return a lightweight compliance summary for dashboards."""
+    from phi_redactor.audit.reports import ComplianceReportGenerator
+
+    state = request.app.state
+    audit = state.audit_trail
+
+    generator = ComplianceReportGenerator(audit_trail=audit)
+    summary = generator.generate_summary()
+
+    return JSONResponse(content=summary)
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from phi_redactor.audit.trail import AuditTrail
 from phi_redactor.config import PhiRedactorConfig, setup_logging
 from phi_redactor.detection.engine import PhiDetectionEngine
 from phi_redactor.masking.semantic import SemanticMasker
-from phi_redactor.proxy.routes import library, management, openai
+from phi_redactor.proxy.routes import anthropic, library, management, openai
 from phi_redactor.proxy.session import SessionManager
 from phi_redactor.vault.store import PhiVault
 
@@ -151,6 +151,7 @@ def create_app(config: PhiRedactorConfig | None = None) -> FastAPI:
     # -- Routers -----------------------------------------------------------
     app.include_router(openai.router)
     app.include_router(openai.default_router)
+    app.include_router(anthropic.router)
     app.include_router(management.router)
     app.include_router(library.router)
 

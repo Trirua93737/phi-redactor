@@ -21,7 +21,7 @@ def tmp_dir() -> Generator[Path, None, None]:
 def sample_clinical_text() -> str:
     """Sample clinical note containing various PHI types."""
     return (
-        "Patient John Smith (DOB: 03/15/1956, SSN: 123-45-6789) presented to "
+        "Patient John Smith (DOB: 03/15/1956, SSN: 456-78-9012) presented to "
         "Springfield General Hospital on January 15, 2026. MRN: 00456789. "
         "The 67-year-old male was referred by Dr. Maria Garcia (NPI: 1234567890) "
         "for evaluation of Type 2 Diabetes Mellitus (E11.9). "
@@ -67,7 +67,7 @@ def sample_fhir_patient() -> dict:
             {"system": "email", "value": "john.smith@email.com"},
         ],
         "identifier": [
-            {"system": "http://hl7.org/fhir/sid/us-ssn", "value": "123-45-6789"},
+            {"system": "http://hl7.org/fhir/sid/us-ssn", "value": "456-78-9012"},
             {"system": "http://hospital.example.com/mrn", "value": "00456789"},
         ],
     }

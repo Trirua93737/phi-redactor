@@ -163,6 +163,61 @@ class PhiVault:
             return None
         return self._encryption.decrypt(row[0])
 
+    def get_reverse_map(self, session_id: str) -> dict[str, str]:
+        """Return ``{synthetic_value: original_plaintext}`` for all entries in a session.
+
+        Used by :meth:`SemanticMasker.rehydrate` to reverse-map every synthetic
+        token back to its original PHI value.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT synthetic_value, original_encrypted FROM vault_entries
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchall()
+        return {
+            synthetic: self._encryption.decrypt(encrypted)
+            for synthetic, encrypted in rows
+        }
+
+    def get_session_mappings(self, session_id: str) -> list[dict[str, str]]:
+        """Return all mappings for a session as a list of dicts.
+
+        Each dict contains ``original``, ``synthetic``, and ``category``.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT original_encrypted, synthetic_value, phi_category
+            FROM vault_entries WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchall()
+        return [
+            {
+                "original": self._encryption.decrypt(encrypted),
+                "synthetic": synthetic,
+                "category": category,
+            }
+            for encrypted, synthetic, category in rows
+        ]
+
+    def get_session_count(self) -> int:
+        """Return the total number of sessions."""
+        row = self._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        return row[0] if row else 0
+
+    def get_mapping_count(self, session_id: str | None = None) -> int:
+        """Return the number of vault entries, optionally filtered by session."""
+        if session_id:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM vault_entries WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        else:
+            row = self._conn.execute("SELECT COUNT(*) FROM vault_entries").fetchone()
+        return row[0] if row else 0
+
     # ------------------------------------------------------------------
     # Session management
     # ------------------------------------------------------------------
