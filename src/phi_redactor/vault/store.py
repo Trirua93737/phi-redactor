@@ -1,0 +1,241 @@
+"""Local encrypted SQLite vault for PHI token mappings.
+
+Provides persistent, encrypted storage of original-PHI-to-synthetic-value
+mappings keyed by session.  Original PHI is never stored in plaintext --
+it is Fernet-encrypted at rest and identified via SHA-256 hashes for
+deduplication lookups.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import random
+import sqlite3
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from phi_redactor.models import SessionInfo, SessionStatus
+from phi_redactor.vault.encryption import VaultEncryption
+
+
+_DEFAULT_SESSION_LIFETIME_HOURS = 24
+
+
+class PhiVault:
+    """Local encrypted SQLite vault for PHI token mappings.
+
+    Parameters
+    ----------
+    db_path:
+        Filesystem path for the SQLite database.  Tilde-expanded automatically.
+        Defaults to ``~/.phi-redactor/vault.db``.
+    passphrase:
+        Optional passphrase forwarded to :class:`VaultEncryption` for
+        key derivation.
+    key_path:
+        Optional explicit path for the encryption key file.  When *None*
+        the key is stored next to *db_path* with a ``.key`` suffix.
+    """
+
+    def __init__(
+        self,
+        db_path: str = "~/.phi-redactor/vault.db",
+        passphrase: str | None = None,
+        key_path: str | Path | None = None,
+    ) -> None:
+        self._db_path = Path(db_path).expanduser()
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        effective_key_path = (
+            Path(key_path) if key_path else self._db_path.with_suffix(".key")
+        )
+
+        self._encryption = VaultEncryption(
+            key_path=effective_key_path,
+            passphrase=passphrase,
+        )
+
+        self._conn = sqlite3.connect(str(self._db_path))
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._init_db()
+
+    # ------------------------------------------------------------------
+    # Schema initialisation
+    # ------------------------------------------------------------------
+
+    def _init_db(self) -> None:
+        """Create database tables and indexes if they do not exist."""
+        with self._conn:
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id                      TEXT PRIMARY KEY,
+                    created_at              TEXT NOT NULL,
+                    last_active_at          TEXT NOT NULL,
+                    expires_at              TEXT NOT NULL,
+                    provider                TEXT NOT NULL,
+                    status                  TEXT NOT NULL DEFAULT 'active',
+                    date_shift_offset_days  INTEGER NOT NULL,
+                    age_shift_offset_years  INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS vault_entries (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    original_hash       TEXT NOT NULL,
+                    original_encrypted  BLOB NOT NULL,
+                    synthetic_value     TEXT NOT NULL,
+                    phi_category        TEXT NOT NULL,
+                    created_at          TEXT NOT NULL,
+                    expires_at          TEXT NOT NULL,
+                    UNIQUE(session_id, original_hash)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_vault_session_synthetic
+                    ON vault_entries(session_id, synthetic_value);
+                """
+            )
+
+    # ------------------------------------------------------------------
+    # Mapping CRUD
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _hash_original(original: str) -> str:
+        """Return the SHA-256 hex digest of *original*."""
+        return hashlib.sha256(original.encode("utf-8")).hexdigest()
+
+    def store_mapping(
+        self,
+        session_id: str,
+        original: str,
+        synthetic: str,
+        category: str,
+    ) -> None:
+        """Store an original-to-synthetic mapping (deduplicates by hash).
+
+        If a mapping for the same *(session_id, original)* pair already
+        exists, the insertion is silently ignored.
+        """
+        original_hash = self._hash_original(original)
+        encrypted = self._encryption.encrypt(original)
+        now = datetime.now(timezone.utc).isoformat()
+        expires = (
+            datetime.now(timezone.utc)
+            + timedelta(hours=_DEFAULT_SESSION_LIFETIME_HOURS)
+        ).isoformat()
+
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO vault_entries
+                    (session_id, original_hash, original_encrypted,
+                     synthetic_value, phi_category, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (session_id, original_hash, encrypted, synthetic, category, now, expires),
+            )
+
+    def lookup_by_original(self, session_id: str, original: str) -> str | None:
+        """Return the synthetic value for *original* in *session_id*, or None."""
+        original_hash = self._hash_original(original)
+        row = self._conn.execute(
+            """
+            SELECT synthetic_value FROM vault_entries
+            WHERE session_id = ? AND original_hash = ?
+            """,
+            (session_id, original_hash),
+        ).fetchone()
+        return row[0] if row else None
+
+    def lookup_by_synthetic(self, session_id: str, synthetic: str) -> str | None:
+        """Decrypt and return the original PHI for a synthetic value, or None."""
+        row = self._conn.execute(
+            """
+            SELECT original_encrypted FROM vault_entries
+            WHERE session_id = ? AND synthetic_value = ?
+            """,
+            (session_id, synthetic),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._encryption.decrypt(row[0])
+
+    # ------------------------------------------------------------------
+    # Session management
+    # ------------------------------------------------------------------
+
+    def create_session(self, provider: str = "openai") -> SessionInfo:
+        """Create a new vault session and return its metadata."""
+        session_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(hours=_DEFAULT_SESSION_LIFETIME_HOURS)
+        date_shift = random.randint(-365, 365)
+        age_shift = random.randint(-5, 5)
+
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO sessions
+                    (id, created_at, last_active_at, expires_at, provider,
+                     status, date_shift_offset_days, age_shift_offset_years)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    now.isoformat(),
+                    now.isoformat(),
+                    expires.isoformat(),
+                    provider,
+                    SessionStatus.ACTIVE.value,
+                    date_shift,
+                    age_shift,
+                ),
+            )
+
+        return SessionInfo(
+            id=session_id,
+            created_at=now,
+            last_active_at=now,
+            expires_at=expires,
+            provider=provider,
+            status=SessionStatus.ACTIVE,
+            date_shift_offset_days=date_shift,
+            age_shift_offset_years=age_shift,
+        )
+
+    # ------------------------------------------------------------------
+    # Maintenance
+    # ------------------------------------------------------------------
+
+    def cleanup_expired(self) -> int:
+        """Delete expired sessions and their vault entries.
+
+        Returns the number of sessions removed.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn:
+            # Count before deletion.
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE expires_at < ?",
+                (now,),
+            )
+            count = cursor.fetchone()[0]
+
+            if count > 0:
+                # Foreign-key ON DELETE CASCADE removes vault_entries too.
+                self._conn.execute(
+                    "DELETE FROM sessions WHERE expires_at < ?",
+                    (now,),
+                )
+        return count
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        """Close the underlying database connection."""
+        self._conn.close()
